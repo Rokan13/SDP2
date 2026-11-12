@@ -464,18 +464,18 @@ if __name__ == "__main__":
 
     print("Remaining Statements:", get_all_statements(case_id))
 
-  # =================================
-# TEST CASE SOLUTION METHODS
-# =================================
+    # =================================
+    # TEST CASE SOLUTION METHODS
+    # =================================
 
-add_solution(
+    add_solution(
     case_id,
     suspect_id,
     "David had access to the location and the evidence connects him to the crime."
-)
+    )
 
-solution = get_solution(case_id)
+    solution = get_solution(case_id)
 
-print("Case Solution:", solution)
+    print("Case Solution:", solution)
     
 
