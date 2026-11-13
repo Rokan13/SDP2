@@ -1,7 +1,11 @@
+import os
 import sqlite3
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "caseclosed.db")
+
 def connect_db():
-    conn = sqlite3.connect("caseclosed.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -99,17 +103,20 @@ def add_case(case_title, case_type, description, location, incident_date):
         VALUES (?, ?, ?, ?, ?)
     """, (case_title, case_type, description, location, incident_date))
 
+    case_id = cursor.lastrowid
+
     conn.commit()
     conn.close()
 
     print("New Case Added Successfully!")
+    return case_id
 
 # View Cases Method
 def get_all_cases():
     conn = connect_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM cases")
+    cursor.execute("SELECT * FROM cases ORDER BY case_id")
     cases = cursor.fetchall()
 
     conn.close()
@@ -166,10 +173,13 @@ def add_suspect(case_id, suspect_name, age, occupation, address):
         VALUES (?, ?, ?, ?, ?)
     """, (case_id, suspect_name, age, occupation, address))
 
+    suspect_id = cursor.lastrowid
+
     conn.commit()
     conn.close()
 
     print("Suspect Added Successfully!")
+    return suspect_id
 
 # View Suspects Method
 def get_all_suspects(case_id):
@@ -310,10 +320,13 @@ def add_statement(case_id, suspect_id, statement_text, alibi, statement_date):
         VALUES (?, ?, ?, ?, ?)
     """, (case_id, suspect_id, statement_text, alibi, statement_date))
 
+    statement_id = cursor.lastrowid
+
     conn.commit()
     conn.close()
 
     print("Statement Added Successfully!")
+    return statement_id
 
 # View Statements Method
 def get_all_statements(case_id):
@@ -407,75 +420,6 @@ def get_solution(case_id):
     conn.close()
     return solution
 
-if __name__ == "__main__":
-    create_tables()
 
-    # Create Test Case
-    add_case(
-        "Final Test Case",
-        "Investigation",
-        "Testing statement and report.",
-        "Dhaka",
-        "2026-11-04"
-    )
-
-    cases = get_all_cases()
-    case_id = cases[-1][0]
-
-    # Create Test Suspect
-    add_suspect(
-        case_id,
-        "David",
-        28,
-        "Teacher",
-        "Dhaka"
-    )
-
-    suspects = get_all_suspects(case_id)
-    suspect_id = suspects[-1][0]
-
-    # =================================
-    # TEST STATEMENT METHODS
-    # =================================
-
-    add_statement(
-        case_id,
-        suspect_id,
-        "I was at home.",
-        "Stayed at home during the incident.",
-        "2026-11-04"
-    )
-
-    statements = get_all_statements(case_id)
-    statement_id = statements[-1][0]
-
-    print("Statements:", statements)
-
-    update_statement(
-        statement_id,
-        "I was at work.",
-        "Was at the office during the incident.",
-        "2026-11-04"
-    )
-
-    print("Updated Statements:", get_all_statements(case_id))
-
-    delete_statement(statement_id)
-
-    print("Remaining Statements:", get_all_statements(case_id))
-
-    # =================================
-    # TEST CASE SOLUTION METHODS
-    # =================================
-
-    add_solution(
-    case_id,
-    suspect_id,
-    "David had access to the location and the evidence connects him to the crime."
-    )
-
-    solution = get_solution(case_id)
-
-    print("Case Solution:", solution)
     
 
