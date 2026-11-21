@@ -1,11 +1,3 @@
-"""
-CaseClosed - User Management
-Registration, login, password hashing and initial admin setup.
-
-Keep this file in the same folder as database.py.
-Run `python user_management.py` once to create the first admin account.
-"""
-
 import hashlib
 import hmac
 import secrets
