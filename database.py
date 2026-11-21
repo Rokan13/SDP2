@@ -1,425 +1,522 @@
-import os
 import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "caseclosed.db")
+DB_PATH = Path(__file__).resolve().parent / "caseclosed.db"
 
-def connect_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
 
-def create_tables():
-    conn = connect_db()
-    cursor = conn.cursor()
+def connect_db() -> sqlite3.Connection:
+    """Open a SQLite connection and enable foreign-key checks."""
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
 
-    # 1. Cases Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS cases (
-            case_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_title TEXT NOT NULL,
-            case_type TEXT,
-            description TEXT,
-            location TEXT,
-            incident_date TEXT,
-            status TEXT DEFAULT 'Unsolved'
+
+@contextmanager
+def db_connection():
+    """Commit on success; roll back on error; always close the connection."""
+    connection = connect_db()
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _row_to_dict(row):
+    return dict(row) if row is not None else None
+
+
+def _rows_to_dicts(rows):
+    return [dict(row) for row in rows]
+
+
+def create_tables() -> None:
+    """Create all six project tables and useful indexes."""
+    with db_connection() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user'
+                    CHECK (role IN ('admin', 'user'))
+            );
+
+            CREATE TABLE IF NOT EXISTS cases (
+                case_id TEXT PRIMARY KEY,
+                case_title TEXT NOT NULL,
+                case_type TEXT NOT NULL,
+                description TEXT NOT NULL,
+                location TEXT,
+                incident_date TEXT,
+                status TEXT NOT NULL DEFAULT 'Unsolved',
+                difficulty_level TEXT NOT NULL DEFAULT 'Medium'
+            );
+
+            CREATE TABLE IF NOT EXISTS suspects (
+                suspect_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                age INTEGER,
+                occupation TEXT,
+                address TEXT,
+                FOREIGN KEY (case_id) REFERENCES cases(case_id)
+                    ON UPDATE CASCADE ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS statements (
+                statement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                suspect_id INTEGER NOT NULL,
+                statement TEXT NOT NULL,
+                alibi TEXT,
+                statement_date TEXT,
+                FOREIGN KEY (suspect_id) REFERENCES suspects(suspect_id)
+                    ON UPDATE CASCADE ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS evidence (
+                evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL,
+                evidence_name TEXT NOT NULL,
+                evidence_type TEXT,
+                description TEXT,
+                collected_date TEXT,
+                FOREIGN KEY (case_id) REFERENCES cases(case_id)
+                    ON UPDATE CASCADE ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS case_solutions (
+                solution_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id TEXT NOT NULL UNIQUE,
+                culprit_id INTEGER NOT NULL,
+                explanation TEXT NOT NULL,
+                FOREIGN KEY (case_id) REFERENCES cases(case_id)
+                    ON UPDATE CASCADE ON DELETE CASCADE,
+                FOREIGN KEY (culprit_id) REFERENCES suspects(suspect_id)
+                    ON UPDATE CASCADE ON DELETE RESTRICT
+            );
+
+        """)
+
+
+# ------------------------- CASES -------------------------
+
+def add_case(case_data: dict) -> str | None:
+    """
+    Add a case. case_data must contain:
+    case_id, case_title, case_type, description, location,
+    incident_date, status, difficulty_level.
+    Returns the inserted case_id, or None if that ID already exists.
+    """
+    required = ("case_id", "case_title", "case_type", "description")
+    if any(not str(case_data.get(key, "")).strip() for key in required):
+        raise ValueError("Case ID, title, type and description are required.")
+
+    case_id = str(case_data["case_id"]).strip()
+    try:
+        with db_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO cases (
+                    case_id, case_title, case_type, description, location,
+                    incident_date, status, difficulty_level
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                case_id,
+                case_data["case_title"].strip(),
+                case_data["case_type"].strip(),
+                case_data["description"].strip(),
+                case_data.get("location"),
+                case_data.get("incident_date"),
+                case_data.get("status", "Unsolved"),
+                case_data.get("difficulty_level", "Medium")
+            ))
+            return case_id if cursor.rowcount > 0 else None
+    except sqlite3.IntegrityError:
+        return None
+
+
+def get_all_cases() -> list[dict]:
+    """Return all cases for the case-list screen."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM cases ORDER BY case_id"
+        ).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def get_case_by_id(case_id: str) -> dict | None:
+    """Return one case, or None if the ID does not exist."""
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM cases WHERE case_id = ?", (str(case_id),)
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def update_case(case_id: str, case_data: dict) -> bool:
+    """Update the supplied case fields. Returns True if a row changed."""
+    required = ("case_title", "case_type", "description")
+    if any(not str(case_data.get(key, "")).strip() for key in required):
+        raise ValueError("Case title, type and description are required.")
+
+    with db_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE cases
+            SET case_title = ?, case_type = ?, description = ?,
+                location = ?, incident_date = ?, status = ?,
+                difficulty_level = ?
+            WHERE case_id = ?
+        """, (
+            case_data["case_title"].strip(),
+            case_data["case_type"].strip(),
+            case_data["description"].strip(),
+            case_data.get("location"),
+            case_data.get("incident_date"),
+            case_data.get("status", "Unsolved"),
+            case_data.get("difficulty_level", "Medium"),
+            str(case_id)
+        ))
+        return cursor.rowcount > 0
+
+
+def delete_case(case_id: str) -> bool:
+    """Delete a case and its dependent records using ON DELETE CASCADE."""
+    with db_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM cases WHERE case_id = ?", (str(case_id),)
         )
-    """)
+        return cursor.rowcount > 0
 
-    # 2. Suspects Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS suspects (
-            suspect_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_id INTEGER,
-            suspect_name TEXT NOT NULL,
-            age INTEGER,
-            occupation TEXT,
-            address TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id)
-            ON DELETE CASCADE
+
+def filter_cases(
+    case_type: str | None = None,
+    status: str | None = None,
+    difficulty_level: str | None = None
+) -> list[dict]:
+
+    query = "SELECT * FROM cases WHERE 1=1"
+    params = []
+
+    if case_type:
+        query += " AND case_type = ? COLLATE NOCASE"
+        params.append(case_type.strip())
+
+    if status:
+        query += " AND status = ? COLLATE NOCASE"
+        params.append(status.strip())
+
+    if difficulty_level:
+        query += " AND difficulty_level = ? COLLATE NOCASE"
+        params.append(difficulty_level.strip())
+
+    query += " ORDER BY case_id"
+
+    with db_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    return _rows_to_dicts(rows)
+
+
+# ------------------------- SUSPECTS -------------------------
+
+def add_suspect(case_id: str, suspect_data: dict) -> int | None:
+    """Add a suspect to a case and return the new suspect_id."""
+    name = str(suspect_data.get("name", "")).strip()
+    if not name:
+        raise ValueError("Suspect name is required.")
+
+    with db_connection() as conn:
+        cursor = conn.execute("""
+            INSERT INTO suspects (case_id, name, age, occupation, address)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            str(case_id), name, suspect_data.get("age"),
+            suspect_data.get("occupation"), suspect_data.get("address")
+        ))
+        return cursor.lastrowid
+
+
+def get_suspects_by_case(case_id: str) -> list[dict]:
+    """Return only suspects belonging to the selected case."""
+    with db_connection() as conn:
+        rows = conn.execute("""
+            SELECT * FROM suspects
+            WHERE case_id = ?
+            ORDER BY suspect_id
+        """, (str(case_id),)).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def update_suspect(suspect_id: int, suspect_data: dict) -> bool:
+    """Update a suspect. Returns True if a row changed."""
+    name = str(suspect_data.get("name", "")).strip()
+    if not name:
+        raise ValueError("Suspect name is required.")
+
+    with db_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE suspects
+            SET name = ?, age = ?, occupation = ?, address = ?
+            WHERE suspect_id = ?
+        """, (
+            name, suspect_data.get("age"), suspect_data.get("occupation"),
+            suspect_data.get("address"), suspect_id
+        ))
+        return cursor.rowcount > 0
+
+
+def delete_suspect(suspect_id: int) -> bool:
+    """Delete a suspect; linked statements cascade, linked culprit is restricted."""
+    with db_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM suspects WHERE suspect_id = ?", (suspect_id,)
         )
-    """)
+        return cursor.rowcount > 0
 
-    # 3. Statements Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS statements (
-            statement_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_id INTEGER,
-            suspect_id INTEGER,
-            statement_text TEXT,
-            alibi TEXT,
-            statement_date TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id)
-            ON DELETE CASCADE,
-            FOREIGN KEY (suspect_id) REFERENCES suspects(suspect_id)
-            ON DELETE CASCADE
+
+# ------------------------- STATEMENTS -------------------------
+
+def add_statement(suspect_id: int, statement_data: dict) -> int | None:
+    """Add a statement for a suspect and return statement_id."""
+    statement_text = str(statement_data.get("statement", "")).strip()
+    if not statement_text:
+        raise ValueError("Statement text is required.")
+
+    with db_connection() as conn:
+        cursor = conn.execute("""
+            INSERT INTO statements (
+                suspect_id, statement, alibi, statement_date
+            )
+            VALUES (?, ?, ?, ?)
+        """, (
+            suspect_id, statement_text, statement_data.get("alibi"),
+            statement_data.get("statement_date")
+        ))
+        return cursor.lastrowid
+
+
+def get_statements_by_case(case_id: str) -> list[dict]:
+    """Return statements for all suspects in the selected case."""
+    with db_connection() as conn:
+        rows = conn.execute("""
+            SELECT
+                st.statement_id, st.suspect_id, su.name AS suspect_name,
+                st.statement, st.alibi, st.statement_date
+            FROM statements AS st
+            JOIN suspects AS su ON su.suspect_id = st.suspect_id
+            WHERE su.case_id = ?
+            ORDER BY st.statement_id
+        """, (str(case_id),)).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def update_statement(statement_id: int, statement_data: dict) -> bool:
+    """Update a statement. Returns True if a row changed."""
+    statement_text = str(statement_data.get("statement", "")).strip()
+    if not statement_text:
+        raise ValueError("Statement text is required.")
+
+    with db_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE statements
+            SET statement = ?, alibi = ?, statement_date = ?
+            WHERE statement_id = ?
+        """, (
+            statement_text, statement_data.get("alibi"),
+            statement_data.get("statement_date"), statement_id
+        ))
+        return cursor.rowcount > 0
+
+
+def delete_statement(statement_id: int) -> bool:
+    """Delete one statement."""
+    with db_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM statements WHERE statement_id = ?", (statement_id,)
         )
-    """)
+        return cursor.rowcount > 0
 
-    # 4. Evidence Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS evidence (
-            evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_id INTEGER,
-            evidence_name TEXT NOT NULL,
-            evidence_type TEXT,
-            description TEXT,
-            collected_date TEXT,
-            FOREIGN KEY (case_id) REFERENCES cases(case_id)
-            ON DELETE CASCADE
+
+# ------------------------- EVIDENCE -------------------------
+
+def add_evidence(case_id: str, evidence_data: dict) -> int | None:
+    """Add evidence to a case and return evidence_id."""
+    evidence_name = str(evidence_data.get("evidence_name", "")).strip()
+    if not evidence_name:
+        raise ValueError("Evidence name is required.")
+
+    with db_connection() as conn:
+        cursor = conn.execute("""
+            INSERT INTO evidence (
+                case_id, evidence_name, evidence_type, description, collected_date
+            )
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            str(case_id), evidence_name, evidence_data.get("evidence_type"),
+            evidence_data.get("description"), evidence_data.get("collected_date")
+        ))
+        return cursor.lastrowid
+
+
+def get_evidence_by_case(case_id: str) -> list[dict]:
+    """Return only evidence belonging to the selected case."""
+    with db_connection() as conn:
+        rows = conn.execute("""
+            SELECT * FROM evidence
+            WHERE case_id = ?
+            ORDER BY evidence_id
+        """, (str(case_id),)).fetchall()
+    return _rows_to_dicts(rows)
+
+
+def update_evidence(evidence_id: int, evidence_data: dict) -> bool:
+    """Update evidence. Returns True if a row changed."""
+    evidence_name = str(evidence_data.get("evidence_name", "")).strip()
+    if not evidence_name:
+        raise ValueError("Evidence name is required.")
+
+    with db_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE evidence
+            SET evidence_name = ?, evidence_type = ?,
+                description = ?, collected_date = ?
+            WHERE evidence_id = ?
+        """, (
+            evidence_name, evidence_data.get("evidence_type"),
+            evidence_data.get("description"),
+            evidence_data.get("collected_date"), evidence_id
+        ))
+        return cursor.rowcount > 0
+
+
+def delete_evidence(evidence_id: int) -> bool:
+    """Delete one evidence record."""
+    with db_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM evidence WHERE evidence_id = ?", (evidence_id,)
         )
-    """)
+        return cursor.rowcount > 0
 
-    # 5. Case Solutions Table
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS case_solutions (
-        solution_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER UNIQUE,
-        real_culprit_id INTEGER,
-        explanation TEXT NOT NULL,
-        FOREIGN KEY (case_id) REFERENCES cases(case_id)
-        ON DELETE CASCADE,
-        FOREIGN KEY (real_culprit_id) REFERENCES suspects(suspect_id)
-        ON DELETE CASCADE
-    )
-    """)
-    conn.commit()
-    conn.close()
+# ------------------------- CASE SOLUTIONS -------------------------
 
-# Add Case Method
-def add_case(case_title, case_type, description, location, incident_date):
-    conn = connect_db()
-    cursor = conn.cursor()
+def add_solution(case_id: str, culprit_id: int, explanation: str) -> int | None:
+    """Add one solution; ensure the culprit belongs to the same case."""
+    if not explanation or not explanation.strip():
+        raise ValueError("Solution explanation is required.")
 
-    cursor.execute("""
-        INSERT INTO cases (
-            case_title,
-            case_type,
-            description,
-            location,
-            incident_date
+    with db_connection() as conn:
+        culprit = conn.execute("""
+            SELECT 1 FROM suspects
+            WHERE suspect_id = ? AND case_id = ?
+        """, (culprit_id, str(case_id))).fetchone()
+
+        if culprit is None:
+            raise ValueError("Selected culprit does not belong to this case.")
+
+        cursor = conn.execute("""
+            INSERT INTO case_solutions (case_id, culprit_id, explanation)
+            VALUES (?, ?, ?)
+        """, (str(case_id), culprit_id, explanation.strip()))
+        return cursor.lastrowid
+
+
+def get_solution(case_id: str) -> dict | None:
+    """Return the solution and culprit's name for one case."""
+    with db_connection() as conn:
+        row = conn.execute("""
+            SELECT cs.solution_id, cs.case_id, cs.culprit_id,
+                   su.name AS culprit_name, cs.explanation
+            FROM case_solutions AS cs
+            JOIN suspects AS su ON su.suspect_id = cs.culprit_id
+            WHERE cs.case_id = ?
+        """, (str(case_id),)).fetchone()
+    return _row_to_dict(row)
+
+
+def update_solution(case_id: str, culprit_id: int, explanation: str) -> bool:
+    """Update a solution after validating the culprit belongs to the case."""
+    if not explanation or not explanation.strip():
+        raise ValueError("Solution explanation is required.")
+
+    with db_connection() as conn:
+        culprit = conn.execute("""
+            SELECT 1 FROM suspects
+            WHERE suspect_id = ? AND case_id = ?
+        """, (culprit_id, str(case_id))).fetchone()
+
+        if culprit is None:
+            raise ValueError("Selected culprit does not belong to this case.")
+
+        cursor = conn.execute("""
+            UPDATE case_solutions
+            SET culprit_id = ?, explanation = ?
+            WHERE case_id = ?
+        """, (culprit_id, explanation.strip(), str(case_id)))
+        return cursor.rowcount > 0
+
+
+def delete_solution(case_id: str) -> bool:
+    """Delete the solution for one case."""
+    with db_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM case_solutions WHERE case_id = ?", (str(case_id),)
         )
-        VALUES (?, ?, ?, ?, ?)
-    """, (case_title, case_type, description, location, incident_date))
-
-    case_id = cursor.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    print("New Case Added Successfully!")
-    return case_id
-
-# View Cases Method
-def get_all_cases():
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM cases ORDER BY case_id")
-    cases = cursor.fetchall()
-
-    conn.close()
-    return cases 
-
-# Update Case Method
-def update_case(case_id, case_title, case_type, description, location, incident_date):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE cases
-        SET case_title = ?,
-            case_type = ?,
-            description = ?,
-            location = ?,
-            incident_date = ?
-        WHERE case_id = ?
-    """, (case_title, case_type, description, location, incident_date, case_id))
-
-    conn.commit()
-    conn.close()
-
-    print("Case Updated Successfully!")
-
-# Delete Case Method
-def delete_case(case_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "DELETE FROM cases WHERE case_id = ?",
-        (case_id,)
-    )
-
-    conn.commit()
-    conn.close()
-
-    print("Case Deleted Successfully!")
-
-# Add Suspect Method
-def add_suspect(case_id, suspect_name, age, occupation, address):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO suspects (
-            case_id,
-            suspect_name,
-            age,
-            occupation,
-            address
-        )
-        VALUES (?, ?, ?, ?, ?)
-    """, (case_id, suspect_name, age, occupation, address))
-
-    suspect_id = cursor.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    print("Suspect Added Successfully!")
-    return suspect_id
-
-# View Suspects Method
-def get_all_suspects(case_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT * FROM suspects WHERE case_id = ?",
-        (case_id,)
-    )
-
-    suspects = cursor.fetchall()
-
-    conn.close()
-    return suspects
-
-# Update Suspect Method
-def update_suspect(suspect_id, suspect_name, age, occupation, address):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE suspects
-        SET suspect_name = ?,
-            age = ?,
-            occupation = ?,
-            address = ?
-        WHERE suspect_id = ?
-    """, (suspect_name, age, occupation, address, suspect_id))
-
-    conn.commit()
-    conn.close()
-
-    print("Suspect Updated Successfully!")
-
-# Delete Suspect Method
-def delete_suspect(suspect_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "DELETE FROM suspects WHERE suspect_id = ?",
-        (suspect_id,)
-    )
-
-    conn.commit()
-    conn.close()
-
-    print("Suspect Deleted Successfully!")
-
-    # Add Evidence Method
-def add_evidence(case_id, evidence_name, evidence_type, description, collected_date):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO evidence (
-            case_id,
-            evidence_name,
-            evidence_type,
-            description,
-            collected_date
-        )
-        VALUES (?, ?, ?, ?, ?)
-    """, (case_id, evidence_name, evidence_type, description, collected_date))
-
-    conn.commit()
-    conn.close()
-
-    print("Evidence Added Successfully!")
-
-# View Evidence Method
-def get_all_evidence(case_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT * FROM evidence WHERE case_id = ?",
-        (case_id,)
-    )
-
-    evidence = cursor.fetchall()
-
-    conn.close()
-    return evidence
-
-# Update Evidence Method
-def update_evidence(evidence_id, evidence_name, evidence_type, description, collected_date):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE evidence
-        SET evidence_name = ?,
-            evidence_type = ?,
-            description = ?,
-            collected_date = ?
-        WHERE evidence_id = ?
-    """, (evidence_name, evidence_type, description, collected_date, evidence_id))
-
-    conn.commit()
-    conn.close()
-
-    print("Evidence Updated Successfully!")
-
-# Delete Evidence Method
-def delete_evidence(evidence_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "DELETE FROM evidence WHERE evidence_id = ?",
-        (evidence_id,)
-    )
-
-    conn.commit()
-    conn.close()
-
-    print("Evidence Deleted Successfully!")
-
-    # =====================================
-# STATEMENT MANAGEMENT
-# =====================================
-
-# Add Statement Method
-def add_statement(case_id, suspect_id, statement_text, alibi, statement_date):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO statements (
-            case_id,
-            suspect_id,
-            statement_text,
-            alibi,
-            statement_date
-        )
-        VALUES (?, ?, ?, ?, ?)
-    """, (case_id, suspect_id, statement_text, alibi, statement_date))
-
-    statement_id = cursor.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    print("Statement Added Successfully!")
-    return statement_id
-
-# View Statements Method
-def get_all_statements(case_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT * FROM statements WHERE case_id = ?",
-        (case_id,)
-    )
-
-    statements = cursor.fetchall()
-
-    conn.close()
-    return statements
-
-# Update Statement Method
-def update_statement(statement_id, statement_text, alibi, statement_date):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE statements
-        SET statement_text = ?,
-            alibi = ?,
-            statement_date = ?
-        WHERE statement_id = ?
-    """, (statement_text, alibi, statement_date, statement_id))
-
-    conn.commit()
-    conn.close()
-
-    print("Statement Updated Successfully!")
-
-# Delete Statement Method
-def delete_statement(statement_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "DELETE FROM statements WHERE statement_id = ?",
-        (statement_id,)
-    )
-
-    conn.commit()
-    conn.close()
-
-    print("Statement Deleted Successfully!")
-
-# CASE SOLUTION
-
-# Add Case Solution Method
-def add_solution(case_id, real_culprit_id, explanation):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO case_solutions (
-            case_id,
-            real_culprit_id,
-            explanation
-        )
-        VALUES (?, ?, ?)
-    """, (case_id, real_culprit_id, explanation))
-
-    conn.commit()
-    conn.close()
-
-    print("Case Solution Added Successfully!")
-
-    # View Case Solution Method
-def get_solution(case_id):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT
-            case_solutions.solution_id,
-            case_solutions.case_id,
-            suspects.suspect_id,
-            suspects.suspect_name,
-            case_solutions.explanation
-        FROM case_solutions
-        JOIN suspects
-        ON case_solutions.real_culprit_id = suspects.suspect_id
-        WHERE case_solutions.case_id = ?
-    """, (case_id,))
-
-    solution = cursor.fetchone()
-
-    conn.close()
-    return solution
-
-
-    
-
+        return cursor.rowcount > 0
+
+
+# ------------------------- COMBINED CASE VIEW -------------------------
+
+def get_complete_case(case_id: str) -> dict | None:
+    """
+    Return case, suspects, statements and evidence in one nested dictionary.
+    The solution is deliberately excluded; call get_solution() only when
+    the application is ready to reveal it.
+    """
+    case_info = get_case_by_id(case_id)
+    if case_info is None:
+        return None
+
+    return {
+        "case": case_info,
+        "suspects": get_suspects_by_case(case_id),
+        "statements": get_statements_by_case(case_id),
+        "evidence": get_evidence_by_case(case_id)
+    }
+
+
+# ------------------------- DASHBOARD -------------------------
+
+def get_dashboard_data() -> dict:
+    """Return only total, solved and unsolved case counts."""
+    with db_connection() as conn:
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS total_cases,
+                COALESCE(SUM(
+                    CASE WHEN LOWER(status) = 'solved' THEN 1 ELSE 0 END
+                ), 0) AS solved_cases,
+                COALESCE(SUM(
+                    CASE WHEN LOWER(status) = 'unsolved' THEN 1 ELSE 0 END
+                ), 0) AS unsolved_cases
+            FROM cases
+        """).fetchone()
+
+    return {
+        "total_cases": row["total_cases"],
+        "solved_cases": row["solved_cases"],
+        "unsolved_cases": row["unsolved_cases"]
+    }
+
+
+if __name__ == "__main__":
+    create_tables()
+    print("CaseClosed database and tables are ready.")
+    print(f"Database location: {DB_PATH}")
