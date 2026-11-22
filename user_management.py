@@ -79,7 +79,7 @@ def register_user(username: str, email: str, password: str) -> bool:
         return False
 
 
-def login_user(email: str, password: str) -> dict | None:
+def login_user(username: str, password: str) -> dict | None:
     """
     Return public user details on successful login; otherwise return None.
     The password hash is never returned to the GUI.
@@ -88,7 +88,7 @@ def login_user(email: str, password: str) -> dict | None:
         user = conn.execute("""
             SELECT user_id, username, email, password_hash, role
             FROM users
-            WHERE email = ? COLLATE NOCASE
+            WHERE username = ? COLLATE NOCASE
         """, (email.strip(),)).fetchone()
 
     if user is None or not _verify_password(password, user["password_hash"]):
