@@ -108,7 +108,7 @@ def create_tables() -> None:
                 case_id TEXT NOT NULL,
 
                 status TEXT NOT NULL DEFAULT 'Unsolved'
-                CHECK (status IN ('Unsolved', 'In Progress', 'Solved')),
+                CHECK (status IN ('Unsolved', 'Solved')),
 
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
 
@@ -255,8 +255,7 @@ def filter_cases(
 
     if status and status not in (
         "Solved",
-        "Unsolved",
-        "In Progress"
+        "Unsolved"
     ):
         raise ValueError("Invalid status.")
 
@@ -568,7 +567,7 @@ def get_complete_case(case_id: str) -> dict | None:
     }
 
 
-# ------------------------- DASHBOARD -------------------------
+
 
 # ------------------------- USER DASHBOARD -------------------------
 
@@ -578,7 +577,7 @@ def update_user_progress(
     status: str
 ) -> bool:
 
-    allowed_status = ("Unsolved", "In Progress", "Solved")
+    allowed_status = ("Unsolved", "Solved")
 
     if status not in allowed_status:
         raise ValueError("Invalid case status.")
@@ -676,14 +675,7 @@ def get_dashboard_data(user_id: int) -> dict:
                         WHEN p.status = 'Solved'
                         THEN 1 ELSE 0
                     END
-                ), 0) AS solved_cases,
-
-                COALESCE(SUM(
-                    CASE
-                        WHEN p.status = 'In Progress'
-                        THEN 1 ELSE 0
-                    END
-                ), 0) AS in_progress_cases
+                ), 0) AS solved_cases
 
             FROM cases AS c
 
@@ -694,14 +686,12 @@ def get_dashboard_data(user_id: int) -> dict:
         """, (user_id,)).fetchone()
 
     solved = row["solved_cases"]
-    in_progress = row["in_progress_cases"]
     total = row["total_cases"]
 
     return {
         "total_cases": total,
         "solved_cases": solved,
-        "in_progress_cases": in_progress,
-        "unsolved_cases": total - solved - in_progress
+        "unsolved_cases": total - solved
     }
 
 if __name__ == "__main__":
