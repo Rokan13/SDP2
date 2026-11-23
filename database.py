@@ -36,17 +36,17 @@ def _rows_to_dicts(rows):
 
 
 def create_tables() -> None:
-    """Create all six project tables and useful indexes."""
+    """Create all seven project tables."""
     with db_connection() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'user'
                     CHECK (role IN ('admin', 'user'))
-            );
+);
 
             CREATE TABLE IF NOT EXISTS cases (
                 case_id TEXT PRIMARY KEY,
@@ -55,7 +55,6 @@ def create_tables() -> None:
                 description TEXT NOT NULL,
                 location TEXT,
                 incident_date TEXT,
-                status TEXT NOT NULL DEFAULT 'Unsolved',
                 difficulty_level TEXT NOT NULL DEFAULT 'Medium'
             );
 
@@ -102,6 +101,26 @@ def create_tables() -> None:
                     ON UPDATE CASCADE ON DELETE RESTRICT
             );
 
+            CREATE TABLE IF NOT EXISTS user_case_progress (
+                progress_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                user_id INTEGER NOT NULL,
+                case_id TEXT NOT NULL,
+
+                status TEXT NOT NULL DEFAULT 'Unsolved'
+                CHECK (status IN ('Unsolved', 'In Progress', 'Solved')),
+
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
+                UNIQUE(user_id, case_id),
+
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+                ON DELETE CASCADE,
+
+                FOREIGN KEY (case_id) REFERENCES cases(case_id)
+                ON DELETE CASCADE
+            );
+
         """)
 
 
@@ -109,24 +128,40 @@ def create_tables() -> None:
 
 def add_case(case_data: dict) -> str | None:
     """
-    Add a case. case_data must contain:
-    case_id, case_title, case_type, description, location,
-    incident_date, status, difficulty_level.
-    Returns the inserted case_id, or None if that ID already exists.
+    Add a new case.
+    Returns case_id, or None if the ID already exists.
     """
-    required = ("case_id", "case_title", "case_type", "description")
-    if any(not str(case_data.get(key, "")).strip() for key in required):
-        raise ValueError("Case ID, title, type and description are required.")
+
+    required = (
+        "case_id",
+        "case_title",
+        "case_type",
+        "description"
+    )
+
+    if any(
+        not str(case_data.get(key, "")).strip()
+        for key in required
+    ):
+        raise ValueError(
+            "Case ID, title, type and description are required."
+        )
 
     case_id = str(case_data["case_id"]).strip()
+
     try:
         with db_connection() as conn:
             cursor = conn.execute("""
                 INSERT INTO cases (
-                    case_id, case_title, case_type, description, location,
-                    incident_date, status, difficulty_level
+                    case_id,
+                    case_title,
+                    case_type,
+                    description,
+                    location,
+                    incident_date,
+                    difficulty_level
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 case_id,
                 case_data["case_title"].strip(),
@@ -134,10 +169,11 @@ def add_case(case_data: dict) -> str | None:
                 case_data["description"].strip(),
                 case_data.get("location"),
                 case_data.get("incident_date"),
-                case_data.get("status", "Unsolved"),
                 case_data.get("difficulty_level", "Medium")
             ))
+
             return case_id if cursor.rowcount > 0 else None
+
     except sqlite3.IntegrityError:
         return None
 
@@ -161,16 +197,31 @@ def get_case_by_id(case_id: str) -> dict | None:
 
 
 def update_case(case_id: str, case_data: dict) -> bool:
-    """Update the supplied case fields. Returns True if a row changed."""
-    required = ("case_title", "case_type", "description")
-    if any(not str(case_data.get(key, "")).strip() for key in required):
-        raise ValueError("Case title, type and description are required.")
+    """Update an existing case."""
+
+    required = (
+        "case_title",
+        "case_type",
+        "description"
+    )
+
+    if any(
+        not str(case_data.get(key, "")).strip()
+        for key in required
+    ):
+        raise ValueError(
+            "Case title, type and description are required."
+        )
 
     with db_connection() as conn:
         cursor = conn.execute("""
             UPDATE cases
-            SET case_title = ?, case_type = ?, description = ?,
-                location = ?, incident_date = ?, status = ?,
+            SET
+                case_title = ?,
+                case_type = ?,
+                description = ?,
+                location = ?,
+                incident_date = ?,
                 difficulty_level = ?
             WHERE case_id = ?
         """, (
@@ -179,10 +230,10 @@ def update_case(case_id: str, case_data: dict) -> bool:
             case_data["description"].strip(),
             case_data.get("location"),
             case_data.get("incident_date"),
-            case_data.get("status", "Unsolved"),
             case_data.get("difficulty_level", "Medium"),
             str(case_id)
         ))
+
         return cursor.rowcount > 0
 
 
@@ -196,27 +247,52 @@ def delete_case(case_id: str) -> bool:
 
 
 def filter_cases(
+    user_id: int,
     case_type: str | None = None,
     status: str | None = None,
     difficulty_level: str | None = None
 ) -> list[dict]:
 
-    query = "SELECT * FROM cases WHERE 1=1"
-    params = []
+    if status and status not in (
+        "Solved",
+        "Unsolved",
+        "In Progress"
+    ):
+        raise ValueError("Invalid status.")
+
+    query = """
+        SELECT
+            c.*,
+            COALESCE(p.status, 'Unsolved') AS user_status
+
+        FROM cases AS c
+
+        LEFT JOIN user_case_progress AS p
+            ON c.case_id = p.case_id
+            AND p.user_id = ?
+
+        WHERE 1=1
+    """
+
+    params = [user_id]
 
     if case_type:
-        query += " AND case_type = ? COLLATE NOCASE"
+        query += " AND c.case_type = ? COLLATE NOCASE"
         params.append(case_type.strip())
 
     if status:
-        query += " AND status = ? COLLATE NOCASE"
+        query += """
+            AND COALESCE(p.status, 'Unsolved') = ?
+        """
         params.append(status.strip())
 
     if difficulty_level:
-        query += " AND difficulty_level = ? COLLATE NOCASE"
+        query += """
+            AND c.difficulty_level = ? COLLATE NOCASE
+        """
         params.append(difficulty_level.strip())
 
-    query += " ORDER BY case_id"
+    query += " ORDER BY c.case_id"
 
     with db_connection() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -494,27 +570,139 @@ def get_complete_case(case_id: str) -> dict | None:
 
 # ------------------------- DASHBOARD -------------------------
 
-def get_dashboard_data() -> dict:
-    """Return only total, solved and unsolved case counts."""
+# ------------------------- USER DASHBOARD -------------------------
+
+def update_user_progress(
+    user_id: int,
+    case_id: str,
+    status: str
+) -> bool:
+
+    allowed_status = ("Unsolved", "In Progress", "Solved")
+
+    if status not in allowed_status:
+        raise ValueError("Invalid case status.")
+
+    with db_connection() as conn:
+
+        case = conn.execute(
+            "SELECT 1 FROM cases WHERE case_id = ?",
+            (str(case_id),)
+        ).fetchone()
+
+        if case is None:
+            raise ValueError("Case does not exist.")
+
+        user = conn.execute(
+            "SELECT 1 FROM users WHERE user_id = ?",
+            (user_id,)
+        ).fetchone()
+
+        if user is None:
+            raise ValueError("User does not exist.")
+
+        conn.execute("""
+            INSERT INTO user_case_progress
+                (user_id, case_id, status, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+
+            ON CONFLICT(user_id, case_id)
+            DO UPDATE SET
+                status = excluded.status,
+                updated_at = CURRENT_TIMESTAMP
+        """, (user_id, str(case_id), status))
+
+    return True
+
+
+def get_user_progress(user_id: int) -> list[dict]:
+
+    with db_connection() as conn:
+
+        rows = conn.execute("""
+            SELECT
+                c.case_id,
+                c.case_title,
+                COALESCE(p.status, 'Unsolved') AS status,
+                p.updated_at
+
+            FROM cases AS c
+
+            LEFT JOIN user_case_progress AS p
+                ON c.case_id = p.case_id
+                AND p.user_id = ?
+
+            ORDER BY c.case_id
+        """, (user_id,)).fetchall()
+
+    return _rows_to_dicts(rows)
+
+
+def get_solved_cases(user_id: int) -> list[dict]:
+
+    with db_connection() as conn:
+
+        rows = conn.execute("""
+            SELECT
+                c.case_id,
+                c.case_title,
+                p.status,
+                p.updated_at
+
+            FROM user_case_progress AS p
+
+            JOIN cases AS c
+                ON p.case_id = c.case_id
+
+            WHERE p.user_id = ?
+              AND p.status = 'Solved'
+
+            ORDER BY p.updated_at DESC
+        """, (user_id,)).fetchall()
+
+    return _rows_to_dicts(rows)
+
+
+def get_dashboard_data(user_id: int) -> dict:
+    """Return dashboard counts for one user only."""
+
     with db_connection() as conn:
         row = conn.execute("""
             SELECT
-                COUNT(*) AS total_cases,
+                COUNT(c.case_id) AS total_cases,
+
                 COALESCE(SUM(
-                    CASE WHEN LOWER(status) = 'solved' THEN 1 ELSE 0 END
+                    CASE
+                        WHEN p.status = 'Solved'
+                        THEN 1 ELSE 0
+                    END
                 ), 0) AS solved_cases,
+
                 COALESCE(SUM(
-                    CASE WHEN LOWER(status) = 'unsolved' THEN 1 ELSE 0 END
-                ), 0) AS unsolved_cases
-            FROM cases
-        """).fetchone()
+                    CASE
+                        WHEN p.status = 'In Progress'
+                        THEN 1 ELSE 0
+                    END
+                ), 0) AS in_progress_cases
+
+            FROM cases AS c
+
+            LEFT JOIN user_case_progress AS p
+                ON c.case_id = p.case_id
+                AND p.user_id = ?
+
+        """, (user_id,)).fetchone()
+
+    solved = row["solved_cases"]
+    in_progress = row["in_progress_cases"]
+    total = row["total_cases"]
 
     return {
-        "total_cases": row["total_cases"],
-        "solved_cases": row["solved_cases"],
-        "unsolved_cases": row["unsolved_cases"]
+        "total_cases": total,
+        "solved_cases": solved,
+        "in_progress_cases": in_progress,
+        "unsolved_cases": total - solved - in_progress
     }
-
 
 if __name__ == "__main__":
     create_tables()
