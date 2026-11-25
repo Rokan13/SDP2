@@ -1,4 +1,3 @@
-
 from database import (
     update_user_progress as db_update_user_progress,
     get_user_progress as db_get_user_progress,

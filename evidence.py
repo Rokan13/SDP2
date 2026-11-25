@@ -1,7 +1,7 @@
 from database import (
     create_tables,
     add_evidence,
-    get_all_evidence,
+    get_evidence_by_case,
     update_evidence,
     delete_evidence,
     get_all_cases
@@ -19,7 +19,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 001 - THE 11:47 PM DISAPPEARANCE
     # ======================================================
-    1: [
+    "CASE-001": [
         (
             "Display Case Access Log",
             "Digital Record",
@@ -68,7 +68,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 002 - THE LAST MESSAGE
     # ======================================================
-    2: [
+    "CASE-002": [
         (
             "Medical Report",
             "Medical Record",
@@ -117,7 +117,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 003 - THE VANISHING DIAMOND
     # ======================================================
-    3: [
+    "CASE-003": [
         (
             "Digital Lock Record",
             "Digital Record",
@@ -154,7 +154,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 004 - THE MISSING PROTOTYPE
     # ======================================================
-    4: [
+    "CASE-004": [
         (
             "Access Card Log",
             "Digital Record",
@@ -197,7 +197,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 005 - THE MISSING BLUEPRINT
     # ======================================================
-    5: [
+    "CASE-005": [
         (
             "Display Case Log",
             "Digital Record",
@@ -240,7 +240,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 006 - THE SILENT SERVER
     # ======================================================
-    6: [
+    "CASE-006": [
         (
             "Server Command Log",
             "Digital Record",
@@ -295,7 +295,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 007 - THE 2-MINUTE ALIBI
     # ======================================================
-    7: [
+    "CASE-007": [
         (
             "Room Lock Record",
             "Digital Record",
@@ -356,7 +356,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 008 - THE DEADLY PRESCRIPTION
     # ======================================================
-    8: [
+    "CASE-008": [
         (
             "Syringe & Vial",
             "Physical Evidence",
@@ -393,7 +393,7 @@ CASE_EVIDENCE = {
     # ======================================================
     # CASE 009 - THE POISONED BIRTHDAY SLICE
     # ======================================================
-    9: [
+    "CASE-009": [
         (
             "Cake Residue Sample",
             "Forensic Sample",
@@ -429,9 +429,8 @@ CASE_EVIDENCE = {
 
     # ======================================================
     # CASE 010 - THE STOLEN LAND DEED
-    # EXACTLY AS IN PART 3 OF THE NEW PDF
     # ======================================================
-    10: [
+    "CASE-010": [
         (
             "Safe Key Impression",
             "Forensic Sample",
@@ -460,6 +459,18 @@ CASE_EVIDENCE = {
 }
 
 
+def _resolve_case_id(raw_id: str) -> str:
+    """Allow user/data IDs like '1', '001', or 'CASE-001' to match CASE_EVIDENCE."""
+    cleaned = str(raw_id).strip().upper()
+    if cleaned in CASE_EVIDENCE:
+        return cleaned
+    if cleaned.isdigit():
+        formatted = f"CASE-{int(cleaned):03d}"
+        if formatted in CASE_EVIDENCE:
+            return formatted
+    return str(raw_id).strip()
+
+
 # ==========================================================
 # ADD NEW EVIDENCE
 # ==========================================================
@@ -467,35 +478,31 @@ CASE_EVIDENCE = {
 def add_new_evidence():
     print("\n========== ADD NEW EVIDENCE ==========")
 
-    try:
-        case_id = int(input("Enter Case ID: "))
+    case_id = input("Enter Case ID (e.g., CASE-001): ").strip()
 
-        cases = get_all_cases()
-        valid_case_ids = [case[0] for case in cases]
+    cases = get_all_cases()
+    valid_case_ids = {case["case_id"] for case in cases}
 
-        if case_id not in valid_case_ids:
-            print("Error: Case ID does not exist.")
-            return
+    if case_id not in valid_case_ids:
+        print("Error: Case ID does not exist.")
+        return
 
-        evidence_name = input("Enter Evidence Name: ").strip()
-        evidence_type = input("Enter Evidence Type: ").strip()
-        description = input("Enter Description: ").strip()
-        collected_date = input("Enter Collected Date: ").strip()
+    evidence_name = input("Enter Evidence Name: ").strip()
+    evidence_type = input("Enter Evidence Type: ").strip()
+    description = input("Enter Description: ").strip()
+    collected_date = input("Enter Collected Date: ").strip()
 
-        if not evidence_name:
-            print("Evidence name cannot be empty.")
-            return
+    if not evidence_name:
+        print("Evidence name cannot be empty.")
+        return
 
-        add_evidence(
-            case_id,
-            evidence_name,
-            evidence_type,
-            description,
-            collected_date
-        )
-
-    except ValueError:
-        print("Invalid Case ID. Please enter a number.")
+    new_id = add_evidence(case_id, {
+        "evidence_name": evidence_name,
+        "evidence_type": evidence_type or None,
+        "description": description or None,
+        "collected_date": collected_date or None
+    })
+    print(f"Evidence added successfully (ID: {new_id}).")
 
 
 # ==========================================================
@@ -505,36 +512,32 @@ def add_new_evidence():
 def view_evidence():
     print("\n========== VIEW EVIDENCE ==========")
 
-    try:
-        case_id = int(input("Enter Case ID: "))
+    case_id = input("Enter Case ID (e.g., CASE-001): ").strip()
 
-        cases = get_all_cases()
-        valid_case_ids = [case[0] for case in cases]
+    cases = get_all_cases()
+    valid_case_ids = {case["case_id"] for case in cases}
 
-        if case_id not in valid_case_ids:
-            print("Error: Case ID does not exist.")
-            return
+    if case_id not in valid_case_ids:
+        print("Error: Case ID does not exist.")
+        return
 
-        evidence_list = get_all_evidence(case_id)
+    evidence_list = get_evidence_by_case(case_id)
 
-        if not evidence_list:
-            print("No evidence found for this case.")
-            return
+    if not evidence_list:
+        print("No evidence found for this case.")
+        return
 
-        print("\nCase ID:", case_id)
+    print("\nCase ID:", case_id)
+    print("-" * 80)
+
+    for evidence in evidence_list:
+        print(f"Evidence ID    : {evidence['evidence_id']}")
+        print(f"Case ID        : {evidence['case_id']}")
+        print(f"Evidence Name  : {evidence['evidence_name']}")
+        print(f"Evidence Type  : {evidence['evidence_type']}")
+        print(f"Description    : {evidence['description']}")
+        print(f"Collected Date : {evidence['collected_date']}")
         print("-" * 80)
-
-        for evidence in evidence_list:
-            print(f"Evidence ID    : {evidence[0]}")
-            print(f"Case ID        : {evidence[1]}")
-            print(f"Evidence Name  : {evidence[2]}")
-            print(f"Evidence Type  : {evidence[3]}")
-            print(f"Description    : {evidence[4]}")
-            print(f"Collected Date : {evidence[5]}")
-            print("-" * 80)
-
-    except ValueError:
-        print("Invalid Case ID. Please enter a number.")
 
 
 # ==========================================================
@@ -545,7 +548,7 @@ def update_existing_evidence():
     print("\n========== UPDATE EVIDENCE ==========")
 
     try:
-        evidence_id = int(input("Enter Evidence ID: "))
+        evidence_id = int(input("Enter Evidence ID: ").strip())
 
         evidence_name = input("Enter New Evidence Name: ").strip()
         evidence_type = input("Enter New Evidence Type: ").strip()
@@ -556,13 +559,16 @@ def update_existing_evidence():
             print("Evidence name cannot be empty.")
             return
 
-        update_evidence(
-            evidence_id,
-            evidence_name,
-            evidence_type,
-            description,
-            collected_date
-        )
+        updated = update_evidence(evidence_id, {
+            "evidence_name": evidence_name,
+            "evidence_type": evidence_type or None,
+            "description": description or None,
+            "collected_date": collected_date or None
+        })
+        if updated:
+            print("Evidence updated successfully.")
+        else:
+            print("Evidence ID not found.")
 
     except ValueError:
         print("Invalid Evidence ID. Please enter a number.")
@@ -576,14 +582,17 @@ def delete_existing_evidence():
     print("\n========== DELETE EVIDENCE ==========")
 
     try:
-        evidence_id = int(input("Enter Evidence ID: "))
+        evidence_id = int(input("Enter Evidence ID: ").strip())
 
         confirmation = input(
             "Are you sure you want to delete this evidence? (yes/no): "
         ).strip().lower()
 
         if confirmation == "yes":
-            delete_evidence(evidence_id)
+            if delete_evidence(evidence_id):
+                print("Evidence deleted successfully.")
+            else:
+                print("Evidence ID not found.")
         else:
             print("Delete operation cancelled.")
 
@@ -596,44 +605,45 @@ def delete_existing_evidence():
 # ==========================================================
 
 def load_case_evidence(case_id):
-    if case_id not in CASE_EVIDENCE:
+    dict_key = _resolve_case_id(case_id)
+
+    if dict_key not in CASE_EVIDENCE:
         print(f"No predefined evidence found for Case {case_id}.")
         return
 
     cases = get_all_cases()
-    valid_case_ids = [case[0] for case in cases]
+    valid_case_ids = {case["case_id"] for case in cases}
 
-    if case_id not in valid_case_ids:
-        print(f"Case {case_id} does not exist in the database.")
+    target_db_id = str(case_id).strip()
+    if target_db_id not in valid_case_ids and dict_key in valid_case_ids:
+        target_db_id = dict_key
+
+    if target_db_id not in valid_case_ids:
+        print(f"Case {target_db_id} does not exist in the database.")
         return
 
-    existing_evidence = get_all_evidence(case_id)
+    existing_evidence = get_evidence_by_case(target_db_id)
 
     existing_names = {
-        evidence[2].strip().lower()
+        evidence["evidence_name"].strip().lower()
         for evidence in existing_evidence
     }
 
     added_count = 0
 
-    for evidence_name, evidence_type, description, collected_date in CASE_EVIDENCE[case_id]:
-
+    for evidence_name, evidence_type, description, collected_date in CASE_EVIDENCE[dict_key]:
         if evidence_name.strip().lower() in existing_names:
             continue
 
-        add_evidence(
-            case_id,
-            evidence_name,
-            evidence_type,
-            description,
-            collected_date
-        )
-
+        add_evidence(target_db_id, {
+            "evidence_name": evidence_name,
+            "evidence_type": evidence_type,
+            "description": description,
+            "collected_date": collected_date
+        })
         added_count += 1
 
-    print(
-        f"Case {case_id}: {added_count} new evidence record(s) added."
-    )
+    print(f"{target_db_id}: {added_count} new evidence record(s) added.")
 
 
 # ==========================================================
@@ -645,7 +655,7 @@ def load_all_case_evidence():
     print("      LOADING ALL CASE EVIDENCE")
     print("==========================================")
 
-    for case_id in range(1, 11):
+    for case_id in CASE_EVIDENCE:
         load_case_evidence(case_id)
 
     print("\nAll available case evidence has been loaded.")
@@ -669,10 +679,10 @@ def view_all_evidence():
     total_evidence = 0
 
     for case in cases:
-        case_id = case[0]
-        case_title = case[1]
+        case_id = case["case_id"]
+        case_title = case["case_title"]
 
-        evidence_list = get_all_evidence(case_id)
+        evidence_list = get_evidence_by_case(case_id)
 
         if not evidence_list:
             continue
@@ -683,11 +693,11 @@ def view_all_evidence():
         print("=" * 80)
 
         for evidence in evidence_list:
-            print(f"\nEvidence ID    : {evidence[0]}")
-            print(f"Evidence Name  : {evidence[2]}")
-            print(f"Evidence Type  : {evidence[3]}")
-            print(f"Description    : {evidence[4]}")
-            print(f"Collected Date : {evidence[5]}")
+            print(f"\nEvidence ID    : {evidence['evidence_id']}")
+            print(f"Evidence Name  : {evidence['evidence_name']}")
+            print(f"Evidence Type  : {evidence['evidence_type']}")
+            print(f"Description    : {evidence['description']}")
+            print(f"Collected Date : {evidence['collected_date']}")
             print("-" * 80)
 
             total_evidence += 1
@@ -700,7 +710,6 @@ def view_all_evidence():
 # ==========================================================
 
 def evidence_menu():
-
     while True:
         print("\n")
         print("==========================================")
